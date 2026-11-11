@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion, useMotionValue, useSpring, useTransform } from 'framer-motion'
 import { toast } from 'sonner'
 import { Award, BarChart3, Copy, Download, ExternalLink, LogOut, MessageCircle, Palette, Pencil, Plus, Settings, Trash2 } from 'lucide-react'
-import { api, copyText, fileUrl, fmtDate, useApp, useLoad, waReply } from '../lib.jsx'
+import { api, copyText, fileUrl, fmtDate, fmtDateTime, safeHref, useApp, useLoad, waReply } from '../lib.jsx'
 import { Avatar, Btn, DivisionChip, Empty, ErrorBox, Field, Mascot, Modal, PageTitle, Skeleton, spring } from '../ui.jsx'
 import { RequestCard } from './Queue.jsx'
 import { COLORS, EMOJIS } from './Login.jsx'
@@ -22,7 +22,10 @@ const NEXT = {
 export function MyRequests() {
   const { user } = useApp()
   const nav = useNavigate()
-  const { data } = useLoad(() => api('/requests?mine=true'))
+  const { data, reload } = useLoad(() => api('/requests?mine=true'))
+  const delDraft = async (r) => {
+    try { await api(`/requests/${r.id}`, { method: 'DELETE' }); toast('Draft dihapus.'); reload() } catch (e) { toast.error(e.message) }
+  }
   if (!data) return <><PageTitle tone="bg-brand-cream">Request Saya</PageTitle><Skeleton rows={3} /></>
   const action = (r) => {
     const n = NEXT[r.status]
@@ -49,6 +52,7 @@ export function MyRequests() {
                     <motion.div key={r.id} variants={{ hidden: { opacity: 0, y: 16 }, show: { opacity: 1, y: 0 } }} className="relative">
                       <RequestCard c={{ ...r, code: r.code || 'DRAFT', title: r.title || 'Tanpa judul' }} onClick={() => nav(n.to ? n.to(r) : `/r/${r.id}`)} />
                       <motion.span initial={{ scale: 0, rotate: 12 }} animate={{ scale: 1, rotate: 4 }} transition={{ ...spring, delay: 0.2 }} className="sticker bg-brand-sun text-brand-char absolute -top-2 -right-1 pointer-events-none">{n.label}</motion.span>
+                      {r.status === 'Draft' && <button onClick={() => delDraft(r)} className="absolute bottom-2 right-12 w-10 h-10 rounded-lg border-2 border-ink bg-card flex items-center justify-center" aria-label={`Hapus draft ${r.title || ''}`}><Trash2 size={16} /></button>}
                     </motion.div>
                   )
                 })}
@@ -266,7 +270,7 @@ export function BrandKit() {
             <span className="chip bg-brand-cream text-brand-char">{it.category}</span>
             <div className="font-display font-extrabold text-lg mt-2 pr-8">{it.title}</div>
             <p className="text-sm text-muted font-medium mt-1">{it.description}</p>
-            {it.link ? <a href={it.link} target="_blank" rel="noreferrer" className="btn-primary mt-3"><ExternalLink size={18} /> Buka</a> : <span className="chip bg-ink/10 mt-3">Tautan belum diisi</span>}
+            {safeHref(it.link) ? <a href={safeHref(it.link)} target="_blank" rel="noreferrer" className="btn-primary mt-3"><ExternalLink size={18} /> Buka</a> : <span className="chip bg-ink/10 mt-3">Tautan belum diisi</span>}
             <EditBtn it={it} />
           </motion.div>
         ))}
@@ -278,7 +282,7 @@ export function BrandKit() {
           <div key={it.id} className="card p-4 relative !bg-brand-cream text-brand-char">
             <div className="font-display font-extrabold text-lg pr-8">{it.title}</div>
             <p className="text-sm font-medium mt-1 whitespace-pre-line">{it.description}</p>
-            {it.link && <a href={it.link} target="_blank" rel="noreferrer" className="btn mt-3 text-ink"><ExternalLink size={18} /> Lihat contoh</a>}
+            {safeHref(it.link) && <a href={safeHref(it.link)} target="_blank" rel="noreferrer" className="btn mt-3 text-ink"><ExternalLink size={18} /> Lihat contoh</a>}
             <EditBtn it={it} />
           </div>
         ))}
@@ -343,20 +347,36 @@ export function SettingsPage() {
 
       {tab === 'Pengguna' && (!users ? <Skeleton /> : (
         <div className="space-y-2.5">
-          <p className="text-sm font-semibold text-muted">Semua orang mendaftar sendiri sebagai Requester. Atur role Creative Lead, Designer, dan Manager Divisi di sini.</p>
-          {users.map((u) => (
+          {users.some((u) => !u.approved) && (
+            <div className="card !bg-brand-sun/40 p-3 space-y-2">
+              <h2 className="font-display font-extrabold text-lg">Menunggu persetujuan ({users.filter((u) => !u.approved).length})</h2>
+              {users.filter((u) => !u.approved).map((u) => (
+                <div key={u.id} className="flex items-center justify-between gap-2 flex-wrap bg-card border-2 border-ink rounded-xl p-2.5">
+                  <div className="flex items-center gap-2 min-w-0"><Avatar user={u} /><div className="min-w-0"><div className="font-bold truncate">{u.name}</div><div className="text-xs text-muted truncate">{u.division}{u.jobTitle ? ` · ${u.jobTitle}` : ''}{u.email ? ` · ${u.email}` : ''} · daftar {fmtDateTime(u.createdAt)}</div></div></div>
+                  <div className="flex gap-2">
+                    <Btn kind="primary" onClick={() => upd(u, { approved: true })}>Setujui</Btn>
+                    <Btn onClick={async () => { try { await api(`/users/${u.id}`, { method: 'DELETE' }); reload(); toast(`Pendaftaran ${u.name} ditolak.`) } catch (e) { toast.error(e.message) } }}>Tolak</Btn>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="text-sm font-semibold text-muted">Pendaftaran baru aktif setelah disetujui Admin, lalu masuk sebagai Requester. Atur role Creative Lead, Designer, dan Manager Divisi di sini.</p>
+          {users.filter((u) => u.approved).map((u) => {
+            const locked = u.role === 'Admin' && user.role !== 'Admin'
+            return (
             <div key={u.id} className={`card !shadow-pop-sm p-3 grid grid-cols-2 md:grid-cols-[1.4fr_1fr_1fr_110px_90px_auto] gap-2 items-center ${u.active ? '' : 'opacity-50'}`}>
               <div className="col-span-2 md:col-span-1 flex items-center gap-2 min-w-0"><Avatar user={u} /><div className="min-w-0"><div className="font-bold truncate">{u.name}</div><div className="text-xs text-muted truncate">{u.jobTitle || '-'}{u.email ? ` · ${u.email}` : ''}</div></div></div>
-              <select className="input" value={u.division} onChange={(e) => upd(u, { division: e.target.value })} aria-label="Divisi">{settings.divisions.map((d) => <option key={d.name}>{d.name}</option>)}</select>
-              <select className="input" value={u.role} onChange={(e) => upd(u, { role: e.target.value })} aria-label="Role" disabled={u.id === user.id}>{ROLES.map((r) => <option key={r} disabled={r === 'Admin' && user.role !== 'Admin'}>{r}</option>)}</select>
-              <select className="input" value={u.specialty} onChange={(e) => upd(u, { specialty: e.target.value })} aria-label="Spesialis">{['Semua', 'Digital', 'Cetak', 'Video'].map((r) => <option key={r}>{r}</option>)}</select>
-              <input className="input" type="number" min="1" defaultValue={u.capacity} onBlur={(e) => Number(e.target.value) !== u.capacity && upd(u, { capacity: Number(e.target.value) })} aria-label="Kapasitas" title="Kapasitas request aktif" />
+              <select className="input" value={u.division} onChange={(e) => upd(u, { division: e.target.value })} aria-label="Divisi" disabled={locked}>{settings.divisions.map((d) => <option key={d.name}>{d.name}</option>)}</select>
+              <select className="input" value={u.role} onChange={(e) => upd(u, { role: e.target.value })} aria-label="Role" disabled={u.id === user.id || locked}>{ROLES.map((r) => <option key={r} disabled={r === 'Admin' && user.role !== 'Admin'}>{r}</option>)}</select>
+              <select className="input" value={u.specialty} onChange={(e) => upd(u, { specialty: e.target.value })} aria-label="Spesialis" disabled={locked}>{['Semua', 'Digital', 'Cetak', 'Video'].map((r) => <option key={r}>{r}</option>)}</select>
+              <input className="input" type="number" min="1" defaultValue={u.capacity} onBlur={(e) => Number(e.target.value) !== u.capacity && upd(u, { capacity: Number(e.target.value) })} aria-label="Kapasitas" title="Kapasitas request aktif" disabled={locked} />
               <div className="flex gap-1.5 col-span-2 md:col-span-1">
-                <Btn onClick={() => { setPinFor(u); setNewPin('') }}>Reset PIN</Btn>
-                {u.id !== user.id && <Btn kind="ghost" onClick={() => upd(u, { active: !u.active })}>{u.active ? 'Nonaktifkan' : 'Aktifkan'}</Btn>}
+                {!locked && <Btn onClick={() => { setPinFor(u); setNewPin('') }}>Reset PIN</Btn>}
+                {u.id !== user.id && !locked && <Btn kind="ghost" onClick={() => upd(u, { active: !u.active })}>{u.active ? 'Nonaktifkan' : 'Aktifkan'}</Btn>}
               </div>
             </div>
-          ))}
+          )})}
         </div>
       ))}
 

@@ -11,7 +11,7 @@ USE_MOCK_DB=true uvicorn server:app --reload --port 8000
 # frontend (terminal lain) -> http://localhost:5173
 cd frontend && npm install && npm run dev
 ```
-Masuk pertama: nama **Admin**, PIN `DEFAULT_ADMIN_PIN` (bawaan 123456).
+Masuk pertama: nama **Admin**, PIN `DEFAULT_ADMIN_PIN` (bawaan 123456). Pendaftaran baru harus disetujui Admin di Pengaturan -> Pengguna.
 Data contoh: Pengaturan -> Data -> Isi data contoh.
 
 Uji aturan server: `python backend/test_rules.py http://localhost:8000` (pada database kosong).

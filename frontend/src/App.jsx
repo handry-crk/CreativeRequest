@@ -3,7 +3,7 @@ import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from
 import { AnimatePresence, MotionConfig, motion } from 'framer-motion'
 import { Toaster, toast } from 'sonner'
 import { BarChart3, Images, LayoutGrid, ListChecks, LogIn, MessageCircle, Palette, Plus, Settings, UserRound } from 'lucide-react'
-import { copyText, useApp, waReply } from './lib.jsx'
+import { api, copyText, useApp, useLoad, waReply } from './lib.jsx'
 import { Avatar, Btn, Empty, Mascot, Skeleton, spring } from './ui.jsx'
 import Login from './pages/Login.jsx'
 import Queue from './pages/Queue.jsx'
@@ -31,6 +31,8 @@ function Shell({ children }) {
   const { user, isLead, isCreative, settings } = useApp()
   const nav = useNavigate()
   const items = NAV.filter((n) => (!n.auth || user) && (!n.lead || isLead))
+  const { data: allUsers } = useLoad(() => (user?.role === 'Admin' ? api('/users') : Promise.resolve([])), [user?.role])
+  const pendingCount = (allUsers || []).filter((x) => x.approved === false).length
   const copyWa = async () => {
     const ok = await copyText(waReply(settings))
     ok ? toast.success('Balasan WA tersalin. Tinggal tempel di chat.') : toast.error('Gagal menyalin.')
@@ -49,6 +51,7 @@ function Shell({ children }) {
             <NavLink key={n.to} to={n.to} end={n.end}
               className={({ isActive }) => `flex items-center gap-3 px-3 min-h-[44px] rounded-xl font-bold border-2 ${isActive ? 'bg-brand-cream text-brand-char border-ink shadow-pop-sm' : 'border-transparent hover:bg-white/15'}`}>
               <n.icon size={19} /> {n.label}
+              {n.to === '/pengaturan' && pendingCount > 0 && <span className="ml-auto chip bg-brand-sun text-brand-char">{pendingCount}</span>}
             </NavLink>
           ))}
           {user && (
@@ -84,7 +87,13 @@ function Shell({ children }) {
         {user ? <Link to="/profil" aria-label="Profil"><Avatar user={user} size={34} /></Link> : <Link to="/masuk" className="font-bold text-sm underline">Masuk</Link>}
       </header>
 
-      <main className="flex-1 min-w-0 px-3 md:px-8 pt-4 md:pt-8 pb-28 md:pb-12 max-w-[1500px]">{children}</main>
+      <main className="flex-1 min-w-0 px-3 md:px-8 pt-4 md:pt-8 pb-28 md:pb-12 max-w-[1500px]">
+        {settings?.mockDb && isLead && (
+          <div role="alert" className="rounded-xl border-2 border-ink bg-brand text-white font-bold text-sm p-3 mb-4">Database sementara aktif: semua data hilang saat server restart. Isi MONGO_URL dan USE_MOCK_DB=false di Railway.</div>
+        )}
+        {pendingCount > 0 && <Link to="/pengaturan" className="md:hidden block rounded-xl border-2 border-ink bg-brand-sun text-brand-char font-bold text-sm p-3 mb-4">{pendingCount} pendaftaran menunggu persetujuan. Buka Pengaturan.</Link>}
+        {children}
+      </main>
 
       {/* nav bawah mobile */}
       <nav className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-card border-t-2 border-ink grid grid-cols-5 items-end pb-[env(safe-area-inset-bottom)]">

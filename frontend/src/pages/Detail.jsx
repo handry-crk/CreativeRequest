@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { toast } from 'sonner'
 import { ArrowLeft, Check, Copy, CopyPlus, ExternalLink, Flame, Link2, PartyPopper, Pencil, Play, Send, ThumbsUp, Undo2, Upload, XCircle } from 'lucide-react'
-import { api, blip, celebrate, copyText, fileUrl, fmtDate, fmtDateTime, uploadImage, useApp, useLoad } from '../lib.jsx'
+import { api, blip, celebrate, copyText, fileUrl, safeHref, fmtDate, fmtDateTime, uploadImage, useApp, useLoad } from '../lib.jsx'
 import { Avatar, Btn, DeadlineRing, DivisionChip, Empty, ErrorBox, Field, Lives, Mascot, Modal, Skeleton, StatusChip, UrgentFlame, spring } from '../ui.jsx'
 
 const STATIONS = ['Diajukan', 'Antre', 'Dikerjakan', 'Review Internal', 'Review Requester', 'Disetujui', 'Selesai']
@@ -149,6 +149,7 @@ export default function Detail() {
   const ap = r.urgentApproval || {}
   const briefItems = settings.briefCheckItems
   const missingItems = briefItems.filter((i) => bc.ok[i] === false)
+  const checkedItems = briefItems.filter((i) => bc.ok[i] === true)
 
   return (
     <div className="max-w-5xl space-y-4">
@@ -205,7 +206,7 @@ export default function Detail() {
 
           {r.status === 'Diajukan' && isLead && (
             <Section title="Cek brief">
-              <p className="text-sm text-muted font-semibold mb-3">Tandai tiap poin. Poin yang kurang akan dikirim ke pengaju.</p>
+              <p className="text-sm text-muted font-semibold mb-3">Tandai semua poin. Brief hanya bisa diterima bila keenamnya lengkap; poin yang kurang dikirim ke pengaju. ({checkedItems.length}/{briefItems.length})</p>
               <div className="grid sm:grid-cols-2 gap-2">
                 {briefItems.map((it) => (
                   <div key={it} className="flex items-center justify-between gap-2 rounded-xl border-2 border-ink p-2 pl-3">
@@ -243,7 +244,7 @@ export default function Detail() {
               </div>
               <div className="mt-3"><ErrorBox error={error} /></div>
               <div className="flex gap-2 flex-wrap mt-3">
-                <Btn kind="primary" disabled={busy || missingItems.length > 0} onClick={() => act('check-brief', { decision: 'terima', priority: bc.priority, designerId: bc.designerId, note: bc.note }, () => { toast.success('Brief diterima dan masuk antrean.') })}><Check size={18} /> Terima brief</Btn>
+                <Btn kind="primary" disabled={busy || checkedItems.length < briefItems.length} onClick={() => act('check-brief', { decision: 'terima', checked: checkedItems, priority: bc.priority, designerId: bc.designerId, note: bc.note }, () => { toast.success('Brief diterima dan masuk antrean.') })}><Check size={18} /> Terima brief</Btn>
                 <Btn disabled={busy} onClick={() => act('check-brief', { decision: 'kembalikan', missing: missingItems, note: bc.note }, () => toast('Brief dikembalikan ke pengaju.'))}><Undo2 size={18} /> Kembalikan ({missingItems.length})</Btn>
                 <Btn kind="ghost" disabled={busy} onClick={() => act('check-brief', { decision: 'tolak', note: bc.note })}>Tolak</Btn>
               </div>
@@ -359,14 +360,14 @@ export default function Detail() {
             ? <BeforeAfter before={prevImg[prevImg.length - 2].url} after={last.url} />
             : isImg(last.url)
               ? <img src={fileUrl(last.url)} alt="Pratinjau hasil" className="rounded-xl border-2 border-ink max-w-full md:max-w-xl" />
-              : <a href={last.url} target="_blank" rel="noreferrer" className="btn"><ExternalLink size={18} /> Buka pratinjau hasil</a>)}
+              : <a href={safeHref(last.url)} target="_blank" rel="noreferrer" className="btn"><ExternalLink size={18} /> Buka pratinjau hasil</a>)}
           {r.status === 'Selesai' && (
             <div className="space-y-2">
-              {r.driveFolderLink && <a href={r.driveFolderLink} target="_blank" rel="noreferrer" className="btn-sun"><ExternalLink size={18} /> Buka folder Drive</a>}
+              {r.driveFolderLink && <a href={safeHref(r.driveFolderLink)} target="_blank" rel="noreferrer" className="btn-sun"><ExternalLink size={18} /> Buka folder Drive</a>}
               {r.outputs.map((o, i) => (
                 <div key={i} className="flex items-center justify-between gap-2 rounded-xl border-2 border-ink p-2.5 text-sm">
                   <div className="min-w-0"><div className="font-bold">{o.name} · {o.size} {o.unit}</div><div className="text-muted truncate">{o.fileName}</div></div>
-                  {o.fileLink && <a href={o.fileLink} target="_blank" rel="noreferrer" className="btn !min-h-[40px]"><Link2 size={16} /> File</a>}
+                  {o.fileLink && <a href={safeHref(o.fileLink)} target="_blank" rel="noreferrer" className="btn !min-h-[40px]"><Link2 size={16} /> File</a>}
                 </div>
               ))}
             </div>
@@ -381,7 +382,7 @@ export default function Detail() {
               <div key={n.id} className="rounded-xl border-2 border-ink p-3 bg-paper">
                 <div className="flex items-center justify-between text-xs font-bold text-muted"><span>Ronde {n.round} · {n.authorName}</span><span>{fmtDateTime(n.at)}</span></div>
                 <p className="font-medium mt-1 whitespace-pre-line">{n.text}</p>
-                {n.link && <a href={n.link} target="_blank" rel="noreferrer" className="text-sm font-bold underline">Lampiran</a>}
+                {n.link && <a href={safeHref(n.link)} target="_blank" rel="noreferrer" className="text-sm font-bold underline">Lampiran</a>}
                 {n.resolved && <span className="chip bg-[#C9F0D6] text-brand-char mt-1">sudah dikerjakan</span>}
               </div>
             ))}
@@ -402,7 +403,7 @@ export default function Detail() {
             <div className="flex gap-2 flex-wrap">
               {(r.references || []).map((x, i) => isImg(x)
                 ? <a key={x} href={fileUrl(x)} target="_blank" rel="noreferrer"><img src={fileUrl(x)} alt={`Referensi ${i + 1}`} className="h-16 rounded-lg border-2 border-ink" /></a>
-                : <a key={x} href={x} target="_blank" rel="noreferrer" className="underline font-bold break-all">{x}</a>)}
+                : <a key={x} href={safeHref(x)} target="_blank" rel="noreferrer" className="underline font-bold break-all">{x}</a>)}
             </div>
           </Row>
           <Row k="Catatan">{r.notes}</Row>
@@ -413,7 +414,7 @@ export default function Detail() {
           <Row k="Body"><span className="whitespace-pre-line">{r.copy?.body}</span></Row>
           <Row k="S&K">{r.copy?.terms}</Row>
           <Row k="Disetujui">{r.copyApprovedBy}{r.copywriter ? ` · Copywriter: ${r.copywriter}` : ''}</Row>
-          <Row k="Aset">{r.useBrandAssets ? 'Gunakan aset brand' : r.assetLink && <a href={r.assetLink} target="_blank" rel="noreferrer" className="underline font-bold break-all">{r.assetLink}</a>}</Row>
+          <Row k="Aset">{r.useBrandAssets ? 'Gunakan aset brand' : r.assetLink && <a href={safeHref(r.assetLink)} target="_blank" rel="noreferrer" className="underline font-bold break-all">{r.assetLink}</a>}</Row>
           <Row k="Output">{(r.outputs || []).map((o) => `${o.name} ${o.size} ${o.unit} (${o.fileFormat})`).join(' · ')}</Row>
         </Section>
       </div>
@@ -447,7 +448,7 @@ export default function Detail() {
         <p className="font-semibold">{confirmAssign}</p>
         <div className="flex gap-2 mt-4">
           <Btn className="flex-1" onClick={() => setConfirmAssign(null)}>Pilih yang lain</Btn>
-          <Btn kind="primary" className="flex-1" onClick={() => { setConfirmAssign(null); act('check-brief', { decision: 'terima', priority: bc.priority, designerId: bc.designerId, note: bc.note, confirm: true }, () => toast.success('Brief diterima dan masuk antrean.')) }}>Tetap tugaskan</Btn>
+          <Btn kind="primary" className="flex-1" onClick={() => { setConfirmAssign(null); act('check-brief', { decision: 'terima', checked: checkedItems, priority: bc.priority, designerId: bc.designerId, note: bc.note, confirm: true }, () => toast.success('Brief diterima dan masuk antrean.')) }}>Tetap tugaskan</Btn>
         </div>
       </Modal>
 

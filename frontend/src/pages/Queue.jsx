@@ -14,7 +14,9 @@ export function RequestCard({ c, onClick, highlight, dragging, shake }) {
       animate={shake ? { x: [0, -10, 10, -6, 6, 0], opacity: 1, y: 0 } : { opacity: 1, y: 0, x: 0 }}
       transition={spring}
       whileHover={{ y: -3, rotate: -0.6 }} onClick={onClick}
-      className={`card p-3 cursor-pointer text-left w-full ${c.overdue ? 'breathe !border-brand' : ''} ${highlight ? '!bg-brand-sun/40' : ''} ${dragging ? 'shadow-pop-lg rotate-3' : ''}`}
+      role={onClick ? 'button' : undefined} tabIndex={onClick ? 0 : undefined} aria-label={onClick ? `${c.code} ${c.title}, ${c.status}` : undefined}
+      onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick() } } : undefined}
+      className={`card p-3 cursor-pointer text-left w-full focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-sun ${c.overdue ? 'breathe !border-brand' : ''} ${highlight ? '!bg-brand-sun/40' : ''} ${dragging ? 'shadow-pop-lg rotate-3' : ''}`}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
@@ -39,9 +41,9 @@ export function RequestCard({ c, onClick, highlight, dragging, shake }) {
 }
 
 function DraggableCard({ c, canDrag, ...rest }) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: c.id, disabled: !canDrag })
+  const { listeners, setNodeRef, isDragging } = useDraggable({ id: c.id, disabled: !canDrag })
   return (
-    <div ref={setNodeRef} {...listeners} {...attributes} className={isDragging ? 'opacity-30' : ''} style={{ touchAction: canDrag ? 'none' : undefined }}>
+    <div ref={setNodeRef} {...listeners} className={isDragging ? 'opacity-30' : ''} style={{ touchAction: canDrag ? 'none' : undefined }}>
       <RequestCard c={c} {...rest} />
     </div>
   )

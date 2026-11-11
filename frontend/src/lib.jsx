@@ -6,6 +6,8 @@ const TOKEN_KEY = 'cr_token'
 
 export const getToken = () => localStorage.getItem(TOKEN_KEY)
 export const fileUrl = (u) => (u && u.startsWith('/api/') ? BASE + u : u)
+// hanya http(s) atau berkas unggahan; skema lain (mis. javascript:) tidak dijadikan link
+export const safeHref = (u) => (/^https?:\/\//i.test(u || '') ? u : /^\/api\/files\//.test(u || '') ? BASE + u : undefined)
 
 export async function api(path, { method = 'GET', body, form } = {}) {
   const headers = {}

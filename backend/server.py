@@ -278,6 +278,8 @@ async def optional_user(authorization: Optional[str] = Header(None)) -> Optional
     if not uid:
         return None
     u = clean(await db.users.find_one({"id": uid, "active": True}))
+    if u and u.get("approved") is False:
+        return None
     return u
 
 
@@ -293,7 +295,9 @@ def require_roles(u: dict, roles: set, msg: str = "Anda tidak punya akses untuk 
 
 
 def public_user(u: dict) -> dict:
-    return {k: u.get(k) for k in ["id", "name", "division", "jobTitle", "role", "specialty", "capacity", "avatar", "active", "prefs", "email"]}
+    out = {k: u.get(k) for k in ["id", "name", "division", "jobTitle", "role", "specialty", "capacity", "avatar", "active", "prefs", "email"]}
+    out["approved"] = u.get("approved") is not False
+    return out
 
 
 def division_code(st: dict, name: str) -> str:
@@ -315,6 +319,17 @@ def earliest_safe_date(st: dict, type_name: str) -> Optional[date]:
     if not t or t.get("minLeadDays") is None:
         return None
     return add_workdays(today_wib(), int(t["minLeadDays"]), st)
+
+
+URL_OK = re.compile(r"^(https?://\S+|/api/files/[a-f0-9]{32}\.(jpg|png|webp|gif))$")
+
+
+def safe_url(v: Any, label: str = "Tautan") -> str:
+    """Hanya http(s) atau berkas unggahan sendiri. Mencegah tautan javascript: dan sejenisnya."""
+    v = (v or "").strip() if isinstance(v, str) else ""
+    if v and not URL_OK.match(v):
+        err(400, f"{label} harus diawali https:// (atau gambar yang diunggah di sini).")
+    return v
 
 
 def camel(title: str) -> str:
@@ -356,12 +371,16 @@ def set_status(r: dict, u: dict, to: str, action: str, note: str = ""):
 def flags(r: dict, st: dict) -> dict:
     overdue = at_risk = False
     days_left = None
-    if r.get("deadlineFinal") and r.get("status") not in CLOSED and r.get("status") != S_DRAFT:
-        dl = date.fromisoformat(r["deadlineFinal"])
+    target = r.get("deadlineFinal") or r.get("neededDate")  # sebelum brief diterima: pakai tanggal dibutuhkan
+    if target and r.get("status") not in CLOSED and r.get("status") != S_DRAFT:
+        try:
+            dl = date.fromisoformat(target)
+        except ValueError:
+            return {"overdue": False, "atRisk": False, "daysLeft": None}
         t = today_wib()
         days_left = workdays_between(t, dl, st)
         overdue = t > dl
-        at_risk = (not overdue) and days_left <= 1 and r["status"] in (S_SUBMITTED, S_INCOMPLETE, S_QUEUE, S_WORK, S_REVISION)
+        at_risk = (not overdue) and days_left <= 1 and r["status"] in (S_URGENT, S_SUBMITTED, S_INCOMPLETE, S_QUEUE, S_WORK, S_REVISION)
     return {"overdue": overdue, "atRisk": at_risk, "daysLeft": days_left}
 
 
@@ -467,9 +486,13 @@ async def startup():
         await db.users.insert_one({
             "id": str(uuid.uuid4()), "name": "Admin", "division": "Creative", "jobTitle": "Administrator",
             "role": "Admin", "specialty": "Semua", "capacity": 5, "email": "", "pinHash": hash_pin(DEFAULT_ADMIN_PIN),
-            "avatar": {"color": "#1F1A1A", "emoji": "🛠️"}, "prefs": {}, "active": True, "createdAt": now_iso(),
+            "avatar": {"color": "#1F1A1A", "emoji": "🛠️"}, "prefs": {}, "active": True, "approved": True, "createdAt": now_iso(),
             "failed": 0, "lockedUntil": 0,
         })
+    try:  # kode request unik (draft belum punya kode)
+        await db.requests.create_index("code", unique=True, partialFilterExpression={"code": {"$type": "string"}})
+    except Exception as e:  # pragma: no cover
+        log.warning("Indeks unik kode tidak dibuat: %s", e)
     if await db.brandkit.count_documents({}) == 0:
         for i, it in enumerate(DEFAULT_BRAND_KIT):
             await db.brandkit.insert_one({"id": str(uuid.uuid4()), "order": i, "link": "", "meta": {}, **it})
@@ -485,6 +508,8 @@ async def health():
 async def names():
     out = []
     async for u in db.users.find({"active": True}):
+        if u.get("approved") is False:
+            continue
         out.append({"id": u["id"], "name": u["name"], "division": u["division"], "avatar": u.get("avatar")})
     return sorted(out, key=lambda x: x["name"].lower())
 
@@ -510,10 +535,10 @@ async def register(body: Dict[str, Any] = Body(...)):
         "email": (body.get("email") or "").strip(), "pinHash": hash_pin(pin),
         "avatar": body.get("avatar") or {"color": "#D7191F", "emoji": "🙂"},
         "prefs": {"reduceMotion": False, "sound": False, "darkMode": False},
-        "active": True, "createdAt": now_iso(), "failed": 0, "lockedUntil": 0,
+        "active": True, "approved": False, "createdAt": now_iso(), "failed": 0, "lockedUntil": 0,
     }
     await db.users.insert_one(dict(u))
-    return {"token": make_token(u["id"]), "user": public_user(u)}
+    return {"pending": True, "message": "Pendaftaran terkirim. Akun aktif setelah disetujui Admin."}
 
 
 @app.post("/api/auth/login")
@@ -521,6 +546,8 @@ async def login(body: Dict[str, Any] = Body(...)):
     u = clean(await db.users.find_one({"id": body.get("userId"), "active": True}))
     if not u:
         err(400, "Nama tidak ditemukan.")
+    if u.get("approved") is False:
+        err(403, "Akun menunggu persetujuan Admin.")
     if u.get("lockedUntil", 0) > time.time():
         mins = int((u["lockedUntil"] - time.time()) / 60) + 1
         err(423, f"Terlalu banyak PIN salah. Coba lagi dalam {mins} menit.")
@@ -557,7 +584,10 @@ async def set_prefs(body: Dict[str, Any] = Body(...), u: dict = Depends(current_
 async def list_users(u: dict = Depends(current_user)):
     out = []
     async for x in db.users.find({}):
+        if x.get("approved") is False and u["role"] != "Admin":
+            continue
         p = public_user(x)
+        p["createdAt"] = x.get("createdAt")
         if u["role"] not in LEAD_ROLES:
             p.pop("email", None)
         if x["role"] in ("Designer", "Creative Lead"):
@@ -570,7 +600,20 @@ async def list_users(u: dict = Depends(current_user)):
 async def update_user(uid: str, body: Dict[str, Any] = Body(...), u: dict = Depends(current_user)):
     require_roles(u, LEAD_ROLES)
     st = await get_settings()
+    target = clean(await db.users.find_one({"id": uid}))
+    if not target:
+        err(404, "Pengguna tidak ditemukan.")
+    if target["role"] == "Admin" and u["role"] != "Admin":
+        err(403, "Akun Admin hanya dapat diubah oleh Admin.")
+    if target["role"] == "Admin" and (body.get("active") is False or body.get("role", "Admin") != "Admin"):
+        others = await db.users.count_documents({"role": "Admin", "active": True, "id": {"$ne": uid}})
+        if others == 0:
+            err(400, "Ini Admin terakhir. Jadikan orang lain Admin dulu.")
     upd: Dict[str, Any] = {}
+    if "approved" in body:
+        if u["role"] != "Admin":
+            err(403, "Pendaftaran disetujui oleh Admin.")
+        upd["approved"] = bool(body["approved"])
     if "role" in body:
         if body["role"] not in ROLES:
             err(400, "Role tidak dikenal.")
@@ -601,11 +644,23 @@ async def update_user(uid: str, body: Dict[str, Any] = Body(...), u: dict = Depe
     return public_user(clean(await db.users.find_one({"id": uid})))
 
 
+@app.delete("/api/users/{uid}")
+async def reject_user(uid: str, u: dict = Depends(current_user)):
+    """Tolak pendaftaran yang belum disetujui."""
+    require_roles(u, {"Admin"}, "Pendaftaran ditolak oleh Admin.")
+    target = await db.users.find_one({"id": uid})
+    if not target or target.get("approved") is not False:
+        err(400, "Hanya pendaftaran yang belum disetujui yang bisa ditolak.")
+    await db.users.delete_one({"id": uid})
+    return {"ok": True}
+
+
 @app.get("/api/settings")
 async def read_settings():
     st = await get_settings()
     st["statuses"] = PIPELINE
     st["publicBaseUrl"] = PUBLIC_BASE_URL
+    st["mockDb"] = USE_MOCK_DB or not MONGO_URL
     return st
 
 
@@ -640,6 +695,10 @@ def apply_brief(r: dict, body: dict):
     for k in BRIEF_FIELDS:
         if k in body:
             r[k] = body[k]
+    if "references" in body:
+        r["references"] = [safe_url(x, "Referensi") for x in (body.get("references") or []) if (x or "").strip()]
+    if "assetLink" in body:
+        r["assetLink"] = safe_url(body.get("assetLink"), "Tautan aset")
     if isinstance(r.get("outputs"), list):
         norm = []
         for o in r["outputs"]:
@@ -647,7 +706,7 @@ def apply_brief(r: dict, body: dict):
                 "name": (o.get("name") or "").strip(), "size": (o.get("size") or "").strip(),
                 "unit": o.get("unit") or "", "orientation": o.get("orientation") or "",
                 "fileFormat": (o.get("fileFormat") or "").strip(),
-                "fileLink": o.get("fileLink") or "", "fileName": o.get("fileName") or "", "done": bool(o.get("done")),
+                "fileLink": safe_url(o.get("fileLink"), "Tautan file"), "fileName": o.get("fileName") or "", "done": bool(o.get("done")),
             })
         r["outputs"] = norm
 
@@ -716,12 +775,15 @@ async def submit(rid: str, u: dict = Depends(current_user)):
     needed = parse_date(r["neededDate"])
     if needed < today_wib():
         err(400, "Tanggal dibutuhkan sudah lewat.")
+    if not is_workday(needed, st):
+        err(400, "Tanggal dibutuhkan jatuh di hari libur. Pilih hari kerja.")
     earliest = earliest_safe_date(st, r["type"])
     urgent = bool(earliest and needed < earliest)
     if urgent and not (r.get("urgentReason") or "").strip():
         err(400, "Wah, ini dadakan. Isi alasan urgent dulu ya.", missing=["Alasan urgent"],
             earliestSafeDate=earliest.isoformat())
-    if not r.get("code"):
+    new_code = not r.get("code")
+    if new_code:
         r["code"] = await next_code()
         r["submittedAt"] = now_iso()
     r["isUrgent"] = urgent
@@ -730,7 +792,15 @@ async def submit(rid: str, u: dict = Depends(current_user)):
         set_status(r, u, S_URGENT, "Brief diajukan (urgent)", r.get("urgentReason", ""))
     else:
         set_status(r, u, S_SUBMITTED, "Brief diajukan")
-    await save_request(r)
+    for attempt in range(5):
+        try:
+            await save_request(r)
+            break
+        except Exception as e:
+            if new_code and "duplicate" in str(e).lower() and attempt < 4:
+                r["code"] = await next_code()
+                continue
+            raise
     return full(r, st)
 
 
@@ -806,6 +876,9 @@ async def check_brief(rid: str, body: Dict[str, Any] = Body(...), u: dict = Depe
         r["rejectReason"] = note
         set_status(r, u, S_REJECTED, "Request ditolak", note)
     elif decision == "terima":
+        unticked = [i for i in BRIEF_CHECK_ITEMS if i not in (body.get("checked") or [])]
+        if unticked:
+            err(400, "Tandai semua poin cek brief sebelum menerima.", missing=unticked)
         if body.get("priority") not in ("Normal", "Tinggi", "Urgent"):
             err(400, "Tetapkan prioritas (Normal, Tinggi, atau Urgent).")
         d = clean(await db.users.find_one({"id": body.get("designerId"), "active": True}))
@@ -865,7 +938,7 @@ async def to_internal_review(rid: str, body: Dict[str, Any] = Body(...), u: dict
     require_maker(u, r)
     if r["status"] not in (S_WORK, S_REVISION):
         err(400, "Hasil hanya bisa dikirim dari status Dikerjakan atau Revisi.")
-    url = (body.get("previewUrl") or "").strip()
+    url = safe_url(body.get("previewUrl"), "Pratinjau")
     if not url:
         err(400, "Lampirkan pratinjau hasil (gambar atau tautan).")
     r.setdefault("previewUrls", []).append({"url": url, "round": r.get("revisionRound", 0), "at": now_iso(), "note": body.get("note", "")})
@@ -916,7 +989,7 @@ async def request_revision(rid: str, body: Dict[str, Any] = Body(...), u: dict =
     r["revisionRound"] = r.get("revisionRound", 0) + 1
     r.setdefault("revisionNotes", []).append({
         "id": str(uuid.uuid4()), "round": r["revisionRound"], "authorId": u["id"], "authorName": u["name"],
-        "text": text, "link": body.get("link") or "", "resolved": False, "at": now_iso(),
+        "text": text, "link": safe_url(body.get("link"), "Lampiran revisi"), "resolved": False, "at": now_iso(),
     })
     set_status(r, u, S_REVISION, f"Minta revisi (ronde {r['revisionRound']})", text)
     await save_request(r)
@@ -947,6 +1020,10 @@ async def finish(rid: str, body: Dict[str, Any] = Body(...), u: dict = Depends(c
         err(400, "Serah terima hanya setelah hasil disetujui pengaju.")
     outs = body.get("outputs") or []
     cur = r.get("outputs") or []
+    safe_url(body.get("driveFolderLink"), "Tautan folder Drive")
+    safe_url(body.get("thumbnailUrl"), "Thumbnail")
+    for o in outs:
+        safe_url(o.get("fileLink"), "Tautan file")
     if len(outs) != len(cur):
         err(400, "Jumlah output tidak sama dengan brief.")
     miss = []
@@ -1174,7 +1251,7 @@ async def brand_kit_add(body: Dict[str, Any] = Body(...), u: dict = Depends(curr
     if not (body.get("title") or "").strip() or not body.get("category"):
         err(400, "Judul dan kategori wajib diisi.")
     it = {"id": str(uuid.uuid4()), "category": body["category"], "title": body["title"].strip(),
-          "description": body.get("description", ""), "link": body.get("link", ""), "meta": body.get("meta") or {},
+          "description": body.get("description", ""), "link": safe_url(body.get("link")), "meta": body.get("meta") or {},
           "order": await db.brandkit.count_documents({})}
     await db.brandkit.insert_one(dict(it))
     return it
@@ -1184,6 +1261,8 @@ async def brand_kit_add(body: Dict[str, Any] = Body(...), u: dict = Depends(curr
 async def brand_kit_edit(iid: str, body: Dict[str, Any] = Body(...), u: dict = Depends(current_user)):
     require_roles(u, LEAD_ROLES, "Brand Kit diubah oleh Creative Lead.")
     upd = {k: body[k] for k in ("category", "title", "description", "link", "meta", "order") if k in body}
+    if "link" in upd:
+        upd["link"] = safe_url(upd["link"])
     res = await db.brandkit.update_one({"id": iid}, {"$set": upd})
     if not res.matched_count:
         err(404, "Item tidak ditemukan.")

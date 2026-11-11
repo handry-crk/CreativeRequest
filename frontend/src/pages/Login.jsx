@@ -26,6 +26,7 @@ export default function Login() {
   const [mode, setMode] = useState('masuk')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  const [pending, setPending] = useState(false)
   const [f, setF] = useState({ userId: '', pin: '', name: '', division: '', jobTitle: '', email: '', emoji: EMOJIS[0], color: COLORS[0] })
   const set = (k) => (e) => setF((s) => ({ ...s, [k]: e?.target ? e.target.value : e }))
 
@@ -35,7 +36,10 @@ export default function Login() {
     setBusy(true); setError(null)
     try {
       if (mode === 'masuk') done(await api('/auth/login', { method: 'POST', body: { userId: f.userId, pin: f.pin } }))
-      else done(await api('/auth/register', { method: 'POST', body: { name: f.name, division: f.division, jobTitle: f.jobTitle, email: f.email, pin: f.pin, avatar: { color: f.color, emoji: f.emoji } } }))
+      else {
+        await api('/auth/register', { method: 'POST', body: { name: f.name, division: f.division, jobTitle: f.jobTitle, email: f.email, pin: f.pin, avatar: { color: f.color, emoji: f.emoji } } })
+        setPending(true)
+      }
     } catch (err) { setError(err) }
     setBusy(false)
   }
@@ -74,7 +78,15 @@ export default function Login() {
               </button>
             ))}
           </div>
-          <AnimatePresence mode="wait">
+          {pending && (
+            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="card p-5 text-center mb-4 !bg-brand-sun/50">
+              <div className="flex justify-center"><Mascot mood="semangat" size={90} /></div>
+              <p className="font-display font-extrabold text-xl mt-2">Pendaftaran terkirim!</p>
+              <p className="font-semibold text-sm mt-1">Akun {f.name} aktif setelah disetujui Admin. Setelah itu, masuk dengan nama dan PIN yang tadi dibuat.</p>
+              <Btn className="mt-3" onClick={() => { setPending(false); setMode('masuk'); setF((s) => ({ ...s, pin: '' })) }}>Ke halaman masuk</Btn>
+            </motion.div>
+          )}
+          {!pending && <AnimatePresence mode="wait">
             <motion.form key={mode} onSubmit={submit} className="card p-5 space-y-4" initial={{ opacity: 0, x: 30 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -30 }} transition={{ duration: 0.2 }}>
               {mode === 'masuk' ? (
                 <>
@@ -109,13 +121,13 @@ export default function Login() {
                       </div>
                     </div>
                   </div>
-                  <Field label="Buat PIN (6 angka)" required hint="PIN dipakai setiap masuk. Jangan dibagikan."><PinInput value={f.pin} onChange={set('pin')} /></Field>
+                  <Field label="Buat PIN (6 angka)" required hint="PIN dipakai setiap masuk. Jangan dibagikan. Akun aktif setelah disetujui Admin."><PinInput value={f.pin} onChange={set('pin')} /></Field>
                 </>
               )}
               <ErrorBox error={error} />
               <Btn kind="primary" className="w-full !min-h-[52px] font-display text-lg" disabled={busy || f.pin.length !== 6}>{busy ? 'Sebentar…' : mode === 'masuk' ? 'Masuk' : 'Daftar & masuk'}</Btn>
             </motion.form>
-          </AnimatePresence>
+          </AnimatePresence>}
           <button onClick={() => { enterGuest(); nav('/') }} className="btn-ghost w-full mt-3"><Eye size={18} /> Lihat saja (tanpa masuk)</button>
         </div>
       </div>

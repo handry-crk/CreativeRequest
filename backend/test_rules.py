@@ -38,10 +38,19 @@ def msg(res):
     return (res[1] or {}).get("detail", {}).get("message", "") if isinstance(res[1], dict) else ""
 
 
+PENDING = {}
+
+
 def reg(name, division):
+    """Daftar -> harus menunggu -> disetujui Admin -> masuk."""
     s, d = call("POST", "/api/auth/register", {"name": name, "division": division, "pin": "111111"})
+    assert s == 200 and d.get("pending") and "token" not in d, d
+    uid = [x for x in call("GET", "/api/users", None, admin)[1] if x["name"] == name][0]["id"]
+    PENDING[name] = call("POST", "/api/auth/login", {"userId": uid, "pin": "111111"})[0]
+    assert call("PUT", f"/api/users/{uid}", {"approved": True}, admin)[0] == 200
+    s, d = call("POST", "/api/auth/login", {"userId": uid, "pin": "111111"})
     assert s == 200, d
-    return d["token"], d["user"]["id"]
+    return d["token"], uid
 
 
 def workday_plus(n):
@@ -76,12 +85,44 @@ call("PUT", f"/api/users/{agoy_id}", {"role": "Creative Lead"}, admin)
 call("PUT", f"/api/users/{dina_id}", {"role": "Designer", "specialty": "Digital", "capacity": 1}, admin)
 call("PUT", f"/api/users/{raka_id}", {"role": "Designer", "specialty": "Cetak"}, admin)
 
+CHECKED = call("GET", "/api/settings")[1]["briefCheckItems"]
+
+print("Pendaftaran & hak akses")
+check("Akun baru tidak bisa masuk sebelum disetujui Admin", PENDING["Tari T"] == 403, PENDING)
+s, d = call("POST", "/api/auth/register", {"name": "Belum Disetujui", "division": "Finance", "pin": "111111"})
+check("Nama yang belum disetujui tidak muncul di daftar masuk", not any(n["name"] == "Belum Disetujui" for n in call("GET", "/api/auth/names")[1]))
+pend_id = [x for x in call("GET", "/api/users", None, admin)[1] if x["name"] == "Belum Disetujui"][0]["id"]
+check("Creative Lead tidak bisa menyetujui pendaftaran", call("PUT", f"/api/users/{pend_id}", {"approved": True}, agoy)[0] == 403)
+check("Creative Lead tidak melihat pendaftaran tertunda", not any(x["name"] == "Belum Disetujui" for x in call("GET", "/api/users", None, agoy)[1]))
+check("Admin menolak pendaftaran", call("DELETE", f"/api/users/{pend_id}", None, admin)[0] == 200)
+check("Creative Lead tidak bisa reset PIN Admin", call("PUT", f"/api/users/{admin_id}", {"newPin": "999999"}, agoy)[0] == 403)
+check("Creative Lead tidak bisa menurunkan Admin", call("PUT", f"/api/users/{admin_id}", {"role": "Requester"}, agoy)[0] == 403)
+check("Admin terakhir tidak bisa diturunkan", call("PUT", f"/api/users/{admin_id}", {"role": "Requester"}, admin)[0] == 400)
+check("Admin terakhir tidak bisa dinonaktifkan", call("PUT", f"/api/users/{admin_id}", {"active": False}, admin)[0] == 400)
+
+print("Tautan & tanggal")
+res = call("POST", "/api/requests", {**BRIEF, "references": ["javascript:alert(1)"]}, tari)
+check("Referensi javascript: ditolak", res[0] == 400, res)
+res = call("POST", "/api/requests", {**BRIEF, "assetLink": "data:text/html,x"}, tari)
+check("Tautan aset data: ditolak", res[0] == 400, res)
+sunday = date.today() + timedelta(days=(7 - date.today().isoweekday()) % 7 + 14)
+s, x = call("POST", "/api/requests", {**BRIEF, "title": "Minggu", "neededDate": sunday.isoformat()}, tari)
+res = call("POST", f"/api/requests/{x['id']}/submit", None, tari)
+check("Tanggal dibutuhkan hari Minggu ditolak", res[0] == 400, res)
+call("DELETE", f"/api/requests/{x['id']}", None, tari)
+s, x = call("POST", "/api/requests", {**BRIEF, "title": "Hari ini", "type": "Lainnya", "neededDate": (date.today() if date.today().isoweekday() != 7 else date.today() + timedelta(days=1)).isoformat()}, tari)
+if date.today().isoweekday() != 7:
+    s, x = call("POST", f"/api/requests/{x['id']}/submit", None, tari)
+    check("Brief belum diterima yang butuh hari ini ditandai mendekati deadline", x.get("atRisk") is True and x.get("daysLeft") == 0, x)
+    call("POST", f"/api/requests/{x['id']}/cancel", {}, tari)
+
 print("Pengajuan")
 s, r = call("POST", "/api/requests", BRIEF, tari)
 rid = r["id"]
 s, r = call("POST", f"/api/requests/{rid}/submit", None, tari)
 check("Flyer 5 hari kerja -> Diajukan", s == 200 and r["status"] == "Diajukan", r)
-check("Kode CR-YYMM-001", r.get("code", "").endswith("-001"), r.get("code"))
+check("Kode CR-YYMM-NNN", r.get("code", "")[:3] == "CR-" and len(r["code"]) == 11, r.get("code"))
+CODE1 = r["code"]
 
 s, r2 = call("POST", "/api/requests", {**BRIEF, "copyFinal": False, "references": [], "outputs": []}, tari)
 res = call("POST", f"/api/requests/{r2['id']}/submit", None, tari)
@@ -95,7 +136,7 @@ check("Urgent tanpa alasan ditolak", res[0] == 400 and "dadakan" in msg(res).low
 call("PUT", f"/api/requests/{uid}", {"urgentReason": "Promo mitra mendadak"}, tari)
 s, u = call("POST", f"/api/requests/{uid}/submit", None, tari)
 check("Urgent -> Menunggu Persetujuan Urgent", u.get("status") == "Menunggu Persetujuan Urgent", u)
-res = call("POST", f"/api/requests/{uid}/check-brief", {"decision": "terima", "priority": "Urgent", "designerId": raka_id}, agoy)
+res = call("POST", f"/api/requests/{uid}/check-brief", {"decision": "terima", "checked": CHECKED, "priority": "Urgent", "designerId": raka_id}, agoy)
 check("Cek brief sebelum persetujuan urgent ditolak", res[0] == 400, res)
 res = call("POST", f"/api/requests/{uid}/approve-urgent", {}, lia)
 check("Divisi lain tidak bisa menyetujui urgent", res[0] == 403, res)
@@ -107,20 +148,22 @@ check("Lead setuju -> Diajukan", u.get("status") == "Diajukan" and u["isUrgent"]
 print("Cek brief")
 res = call("POST", f"/api/requests/{rid}/check-brief", {"decision": "kembalikan", "note": "kurang"}, agoy)
 check("Kembalikan tanpa centang ditolak", res[0] == 400, res)
-res = call("POST", f"/api/requests/{rid}/check-brief", {"decision": "terima", "priority": "Normal"}, tari)
+res = call("POST", f"/api/requests/{rid}/check-brief", {"decision": "terima", "checked": CHECKED, "priority": "Normal"}, tari)
 check("Requester tidak bisa cek brief", res[0] == 403, res)
 s, r = call("POST", f"/api/requests/{rid}/check-brief", {"decision": "kembalikan", "missing": ["Copywriting final"], "note": "S&K belum ada"}, agoy)
 check("Kembalikan -> Perlu Dilengkapi", r.get("status") == "Perlu Dilengkapi" and not r.get("deadlineFinal"), r)
 call("PUT", f"/api/requests/{rid}", {"copy": {"headline": "BELI 1 GRATIS 1", "terms": "S&K berlaku"}}, tari)
 s, r = call("POST", f"/api/requests/{rid}/submit", None, tari)
-check("Ajukan ulang -> Diajukan, kode tetap", r.get("status") == "Diajukan" and r["code"].endswith("-001"), r)
-res = call("POST", f"/api/requests/{rid}/check-brief", {"decision": "terima", "priority": "Normal"}, agoy)
+check("Ajukan ulang -> Diajukan, kode tetap", r.get("status") == "Diajukan" and r["code"] == CODE1, r)
+res = call("POST", f"/api/requests/{rid}/check-brief", {"decision": "terima", "checked": CHECKED, "priority": "Normal"}, agoy)
 check("Terima tanpa desainer ditolak", res[0] == 400, res)
-s, r = call("POST", f"/api/requests/{rid}/check-brief", {"decision": "terima", "priority": "Normal", "designerId": dina_id}, agoy)
+res = call("POST", f"/api/requests/{rid}/check-brief", {"decision": "terima", "checked": CHECKED[:-1], "priority": "Normal", "designerId": dina_id}, agoy)
+check("Terima dengan checklist kurang 1 ditolak", res[0] == 400 and len(res[1]["detail"]["missing"]) == 1, res)
+s, r = call("POST", f"/api/requests/{rid}/check-brief", {"decision": "terima", "checked": CHECKED, "priority": "Normal", "designerId": dina_id}, agoy)
 check("Terima -> Antre dengan deadline", r.get("status") == "Antre" and r.get("deadlineDraft") and r.get("deadlineFinal") == BRIEF["neededDate"], r)
-res = call("POST", f"/api/requests/{uid}/check-brief", {"decision": "terima", "priority": "Urgent", "designerId": dina_id}, agoy)
+res = call("POST", f"/api/requests/{uid}/check-brief", {"decision": "terima", "checked": CHECKED, "priority": "Urgent", "designerId": dina_id}, agoy)
 check("Desainer penuh -> peringatan 409", res[0] == 409 and res[1]["detail"].get("needsConfirm"), res)
-s, u = call("POST", f"/api/requests/{uid}/check-brief", {"decision": "terima", "priority": "Urgent", "designerId": dina_id, "confirm": True}, agoy)
+s, u = call("POST", f"/api/requests/{uid}/check-brief", {"decision": "terima", "checked": CHECKED, "priority": "Urgent", "designerId": dina_id, "confirm": True}, agoy)
 check("Dengan confirm tetap bisa", u.get("status") == "Antre", u)
 
 print("Akses")
@@ -172,11 +215,11 @@ s, r = call("POST", f"/api/requests/{rid}/approve", None, tari)
 check("Pengaju setuju -> Disetujui", r.get("status") == "Disetujui", r)
 sugg = r["suggestedNames"][0]
 check("Saran nama file DDMMYY_OPS_PromoB1G1_Final.png", sugg == date.today().strftime("%d%m%y") + "_OPS_PromoB1G1_Final.png", sugg)
-res = call("POST", f"/api/requests/{rid}/finish", {"driveFolderLink": "https://drive", "thumbnailUrl": "/t.png", "outputs": [{"fileLink": "", "fileName": ""}]}, dina)
+res = call("POST", f"/api/requests/{rid}/finish", {"driveFolderLink": "https://drive", "thumbnailUrl": "https://contoh.id/t.png", "outputs": [{"fileLink": "", "fileName": ""}]}, dina)
 check("Output tanpa tautan ditolak", res[0] == 400, res)
 res = call("POST", f"/api/requests/{rid}/finish", {"driveFolderLink": "https://drive", "outputs": [{"fileLink": "https://f", "fileName": sugg}]}, dina)
 check("Tanpa thumbnail ditolak", res[0] == 400, res)
-s, r = call("POST", f"/api/requests/{rid}/finish", {"driveFolderLink": "https://drive", "thumbnailUrl": "/t.png", "outputs": [{"fileLink": "https://f", "fileName": "asal.png"}]}, dina)
+s, r = call("POST", f"/api/requests/{rid}/finish", {"driveFolderLink": "https://drive", "thumbnailUrl": "https://contoh.id/t.png", "outputs": [{"fileLink": "https://f", "fileName": "asal.png"}]}, dina)
 check("Selesai; nama tidak sesuai pola hanya peringatan", r.get("status") == "Selesai" and len(r["warnings"]) == 1, r)
 
 print("Galeri & dashboard")
@@ -188,8 +231,9 @@ res = call("POST", f"/api/gallery/{rid}/pick", None, tari)
 check("Karya Pilihan hanya oleh Lead", res[0] == 403, res)
 s, d = call("GET", "/api/dashboard", None, agoy)
 ops = [p for p in d["perDivision"] if p["division"] == "Operasional"][0]
-check("Dashboard: 2 request Operasional, 50% urgent, 50% brief dikembalikan",
-      ops["total"] == 2 and ops["urgentPct"] == 50.0 and ops["returnedPct"] == 50.0 and d["totals"]["onTimePct"] == 100.0, ops)
+extra = 1 if date.today().isoweekday() != 7 else 0  # request "Hari ini" yang dibatalkan ikut terhitung
+check("Dashboard: hitungan Operasional (total, urgent, brief dikembalikan, tepat waktu)",
+      ops["total"] == 2 + extra and round(ops["urgentPct"] * ops["total"] / 100) == 1 and round(ops["returnedPct"] * ops["total"] / 100) == 1 and d["totals"]["onTimePct"] == 100.0, ops)
 
 print("Login")
 for i in range(4):
